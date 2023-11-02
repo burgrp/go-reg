@@ -34,6 +34,9 @@ func NewRegisters() (*Registers, error) {
 		broker += ":1883"
 	}
 	opts.AddBroker("tcp://" + broker)
+	opts.AutoReconnect = true
+	opts.ConnectRetryInterval = 10 * time.Second
+	opts.ConnectRetry = true
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
@@ -46,9 +49,11 @@ func NewRegisters() (*Registers, error) {
 }
 
 // Consume creates a new register client with the given name.
-func Consume[T any](registers *Registers, name string, serialize Serialize[T], deserialize Deserialize[T]) (<-chan T, chan<- T) {
+func Consume[T comparable](registers *Registers, name string, serialize Serialize[T], deserialize Deserialize[T]) (<-chan T, chan<- T) {
 	reader := make(chan T)
 	writer := make(chan T)
+
+	var value T
 
 	go func() {
 		for {
@@ -61,7 +66,15 @@ func Consume[T any](registers *Registers, name string, serialize Serialize[T], d
 	}()
 
 	registers.mqtt.Subscribe(format_topic(name, "is"), 0, func(client mqtt.Client, msg mqtt.Message) {
-		reader <- deserialize(msg.Payload())
+		v := deserialize(msg.Payload())
+		if v != value {
+			value = v
+			select {
+			case reader <- value:
+			default:
+				// drop value
+			}
+		}
 	})
 
 	go func() {
@@ -93,6 +106,7 @@ func Provide[T comparable](registers *Registers, name string, serialize Serializ
 	advertise := make(chan bool)
 
 	var value T
+
 	json_metadata, err := json.Marshal(metadata)
 	if err != nil {
 		json_metadata = []byte("{}")
@@ -129,9 +143,12 @@ func Provide[T comparable](registers *Registers, name string, serialize Serializ
 	})
 
 	registers.mqtt.Subscribe(format_topic(name, "set"), 0, func(client mqtt.Client, msg mqtt.Message) {
-		value = deserialize(msg.Payload())
-		publish <- value
-		reader <- value
+		v := deserialize(msg.Payload())
+		select {
+		case reader <- v:
+		default:
+			// drop value
+		}
 	})
 
 	go func() {
@@ -139,7 +156,11 @@ func Provide[T comparable](registers *Registers, name string, serialize Serializ
 			if v != value {
 				value = v
 				publish <- v
-				reader <- value
+				select {
+				case reader <- value:
+				default:
+					// drop value
+				}
 			}
 		}
 	}()
@@ -185,15 +206,24 @@ func Watch(registers *Registers) (<-chan NameAndMetadata, <-chan NameAndValue) {
 	}()
 
 	registers.mqtt.Subscribe("register/+/advertise", 0, func(client mqtt.Client, msg mqtt.Message) {
+		parsed_topic := strings.Split(msg.Topic(), "/")
+		name := parsed_topic[1]
 		var md Metadata
 		json.Unmarshal(msg.Payload(), &md)
-		parsed_topic := strings.Split(msg.Topic(), "/")
-		metadata <- NameAndMetadata{parsed_topic[1], md}
+		select {
+		case metadata <- NameAndMetadata{name, md}:
+		default:
+			// drop value
+		}
 	})
 
 	registers.mqtt.Subscribe("register/+/is", 0, func(client mqtt.Client, msg mqtt.Message) {
 		parsed_topic := strings.Split(msg.Topic(), "/")
-		values <- NameAndValue{parsed_topic[1], msg.Payload()}
+		select {
+		case values <- NameAndValue{parsed_topic[1], msg.Payload()}:
+		default:
+			// drop value
+		}
 	})
 
 	return metadata, values

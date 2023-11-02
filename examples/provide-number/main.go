@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	goreg "goreg/pkg/goreg"
 )
 
@@ -19,7 +20,7 @@ func main() {
 	writer <- 24
 
 	for v := range reader {
-		println("Register changed to:", v)
+		fmt.Println("Register changed to:", v)
 	}
 
 }

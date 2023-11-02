@@ -77,4 +77,8 @@ This is a broadcast challenge for all registers to advertise. Registers MAY resp
 
 ## API
 
+TBD
 
+## CLI
+
+TBD

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	goreg "goreg/pkg/goreg"
 )
 
@@ -12,5 +13,5 @@ func main() {
 
 	reader, _ := goreg.ConsumeNumber(registers, "test.a")
 
-	println(<-reader)
+	fmt.Println(<-reader)
 }
