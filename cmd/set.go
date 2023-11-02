@@ -16,7 +16,7 @@ var setCmd = &cobra.Command{
 	Short: "Write a register",
 	Long: `Writes the specified register.
 With --stay flag, the command will remain connected, read values from stdin and write any changes to stdout.
-Values are specified as JSON expressions, e.g. true, false, "3.14", "hello world" or null.`,
+Values are specified as JSON expressions, e.g. true, false, 3.14, "hello world" or null.`,
 	RunE: runSet,
 }
 
