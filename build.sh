@@ -15,7 +15,11 @@ function build() {
     goos=${1%/*}
     goarch=${1#*/}
     mkdir -p bin
-    GOOS=$goos GOARCH=$goarch go build -o bin/reg-$goos-$goarch -ldflags="-X 'goreg/cmd.Version=$VERSION'" main.go
+    CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
+    -o bin/reg-$goos-$goarch \
+    --ldflags '-extldflags "-static"' \
+    --ldflags="-X 'goreg/cmd.Version=$VERSION'" \
+    main.go
 }
 
 rm -rf bin
