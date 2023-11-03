@@ -1,5 +1,11 @@
-# mqtt-reg
-Register R/W over MQTT
+# Register R/W over MQTT
+
+`Register R/W over MQTT` is a simple and intuitive approach to model a distributed key/value map over the network. Each key/value pair in the distributed map is referred to as a `register`. There is no central point other than the MQTT broker. This protocol unifies communication between smart devices and allows to expose the state of these devices in the form of metrics, which can be further stored and visualized.
+
+This repository servers for the following purposes:
+- Provides Go language library to consume and provide registers.
+- Provides simple CLI tool to manipulate the registers.
+- Describes the communication protocol.
 
 ## Protocol
 
@@ -80,6 +86,17 @@ This is a broadcast challenge for all registers to advertise. Registers MAY resp
 TBD
 
 ## CLI
+
+### Installation
+
+Download binary for your platform from the latest [release](https://github.com/burgrp/go-reg).
+
+### Compilation
+
+```sh
+go mod tidy
+go build -o reg
+```
 
 ### Reference
 
