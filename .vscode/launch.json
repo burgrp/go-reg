@@ -7,7 +7,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
-            "args": ["get", "basement.fan.enabled"],
+            "args": ["get", "test.a", "-s"],
             "env": {
                 "MQTT": "10.1.0.12"
             },
