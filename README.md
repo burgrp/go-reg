@@ -81,4 +81,181 @@ TBD
 
 ## CLI
 
-TBD
+### Reference
+
+#### reg
+
+reg is a command line tool for working with registers over MQTT.
+
+##### Synopsis
+
+The reg command is a command line tool for working with registers over MQTT.
+It allows you to read, write and list registers.
+Furthermore it can provide a 'virtual' register which is convenient for debugging of consumers of the register.
+
+MQTT broker is specified using environment variable MQTT as hostname or hostname:port.
+
+For more information on registers over MQTT, see: https://github.com/burgrp/go-reg .
+
+##### Options
+
+```
+  -h, --help   help for reg
+```
+
+##### SEE ALSO
+
+* [reg get](#reg-get)	 - Read a register
+* [reg list](#reg-list)	 - List all known registers
+* [reg provide](#reg-provide)	 - Provide a register
+* [reg set](#reg-set)	 - Write a register
+* [reg version](#reg-version)	 - Show version
+
+#### reg get
+
+Read a register
+
+##### Synopsis
+
+Reads the specified register.
+With --stay flag, the command will remain connected and write any changes to stdout.
+
+```
+reg get <register> [flags]
+```
+
+##### Options
+
+```
+  -h, --help   help for get
+  -s, --stay   Stay connected and write changes to stdout
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg help
+
+Help about any command
+
+##### Synopsis
+
+Help provides help for any command in the application.
+Simply type reg help [path to command] for full details.
+
+```
+reg help [command] [flags]
+```
+
+##### Options
+
+```
+  -h, --help   help for help
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg list
+
+List all known registers
+
+##### Synopsis
+
+Lists all known registers by sending advertise challenge to all devices.
+With --stay flag, the command will remain connected and write any changes to stdout.
+If registers are specified, only those will be listed.
+
+```
+reg list [<reg1> <reg2> ...] [flags]
+```
+
+##### Options
+
+```
+  -h, --help               help for list
+  -s, --stay               Stay connected, write changes to stdout
+  -t, --timeout duration   Timeout for waiting for advertise challenge to be answered (default 5s)
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg provide
+
+Provide a register
+
+##### Synopsis
+
+Registers are established by advertising them to the network.
+The 'meta' argument is a JSON object containing metadata for the register, such as {"device": "My device"}.
+You can also specify an initial value as the last argument. If no initial value is provided, the register will be created with a null value.
+Values for registers are defined using JSON expressions, such as true, false, 3.14, "hello world," or null.
+Additionally, subsequent values can be read from stdin and written to stdout.
+
+```
+reg provide <name> <meta> [<value>] [flags]
+```
+
+##### Options
+
+```
+  -h, --help        help for provide
+  -r, --read-only   Make the register read-only.
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg set
+
+Write a register
+
+##### Synopsis
+
+Writes the specified register.
+With --stay flag, the command will remain connected, read values from stdin and write any changes to stdout.
+Values are specified as JSON expressions, e.g. true, false, 3.14, "hello world" or null.
+
+```
+reg set <register> <value> [flags]
+```
+
+##### Options
+
+```
+  -h, --help               help for set
+  -s, --stay               Stay connected, read values from stdin and write changes to stdout
+  -t, --timeout duration   Timeout for waiting for the register to be set (default 5s)
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg version
+
+Show version
+
+##### Synopsis
+
+Shows version of reg command line tool.
+
+```
+reg version [flags]
+```
+
+##### Options
+
+```
+  -h, --help   help for version
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+

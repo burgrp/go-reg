@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Run reg.go",
+            "name": "Debug reg",
             "type": "go",
             "request": "launch",
             "mode": "auto",
@@ -11,6 +11,13 @@
             "env": {
                 "MQTT": "10.1.0.12"
             },
+        },
+        {
+            "name": "Update Doc",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "scripts/update-doc/main.go",
         }
     ]
 }

@@ -22,7 +22,7 @@ Additionally, subsequent values can be read from stdin and written to stdout.`,
 }
 
 func init() {
-	rootCmd.AddCommand(provideCmd)
+	RootCmd.AddCommand(provideCmd)
 	provideCmd.Flags().BoolP("read-only", "r", false, "Make the register read-only.")
 	provideCmd.Args = cobra.RangeArgs(2, 3)
 }

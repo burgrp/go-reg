@@ -21,7 +21,7 @@ Values are specified as JSON expressions, e.g. true, false, 3.14, "hello world" 
 }
 
 func init() {
-	rootCmd.AddCommand(setCmd)
+	RootCmd.AddCommand(setCmd)
 	setCmd.Flags().BoolP("stay", "s", false, "Stay connected, read values from stdin and write changes to stdout")
 	setCmd.Flags().DurationP("timeout", "t", 5*time.Second, "Timeout for waiting for the register to be set")
 	setCmd.Args = cobra.ExactArgs(2)

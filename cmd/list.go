@@ -18,7 +18,7 @@ If registers are specified, only those will be listed.`,
 }
 
 func init() {
-	rootCmd.AddCommand(listCmd)
+	RootCmd.AddCommand(listCmd)
 	listCmd.Flags().BoolP("stay", "s", false, "Stay connected, write changes to stdout")
 	listCmd.Flags().DurationP("timeout", "t", 5*time.Second, "Timeout for waiting for advertise challenge to be answered")
 }

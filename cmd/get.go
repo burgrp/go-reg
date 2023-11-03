@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var getCmd = &cobra.Command{
+var GetCmd = &cobra.Command{
 	Use:   "get <register>",
 	Short: "Read a register",
 	Long: `Reads the specified register.
@@ -16,9 +16,9 @@ With --stay flag, the command will remain connected and write any changes to std
 }
 
 func init() {
-	rootCmd.AddCommand(getCmd)
-	getCmd.Flags().BoolP("stay", "s", false, "Stay connected and write changes to stdout")
-	getCmd.Args = cobra.ExactArgs(1)
+	RootCmd.AddCommand(GetCmd)
+	GetCmd.Flags().BoolP("stay", "s", false, "Stay connected and write changes to stdout")
+	GetCmd.Args = cobra.ExactArgs(1)
 }
 
 func runGet(cmd *cobra.Command, args []string) error {
