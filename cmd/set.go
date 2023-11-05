@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"goreg/pkg/goreg"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,6 +27,27 @@ func init() {
 	setCmd.Flags().BoolP("stay", "s", false, "Stay connected, read values from stdin and write changes to stdout")
 	setCmd.Flags().DurationP("timeout", "t", 5*time.Second, "Timeout for waiting for the register to be set")
 	setCmd.Args = cobra.ExactArgs(2)
+}
+
+func jsonEquals(a, b string) bool {
+	valueA := new(interface{})
+	err := json.Unmarshal([]byte(a), valueA)
+	if err != nil {
+		return false
+	}
+
+	valueB := new(interface{})
+	err = json.Unmarshal([]byte(b), valueB)
+	if err != nil {
+		return false
+	}
+
+	equals, err := reflect.DeepEqual(valueA, valueB), nil
+	if err != nil {
+		return false
+	}
+
+	return equals
 }
 
 func runSet(cmd *cobra.Command, args []string) error {
@@ -58,7 +81,7 @@ Loop:
 		case <-timeout_timer.C:
 			return errors.New("timeout waiting for register to be set")
 		case value := <-reader:
-			if value == desired {
+			if jsonEquals(value, desired) {
 				break Loop
 			}
 		}
