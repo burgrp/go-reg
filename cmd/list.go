@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"goreg/pkg/goreg"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -40,7 +41,7 @@ func passNameFilter(name string, args []string) bool {
 		return true
 	}
 	for _, arg := range args {
-		if arg == name {
+		if strings.Contains(name, arg) {
 			return true
 		}
 	}
@@ -92,11 +93,6 @@ func runList(cmd *cobra.Command, args []string) error {
 						timeout_timer = time.NewTimer(timeout)
 						printed[metadata.Name] = true
 						printMetadata(metadata)
-						// exit if all registers have been printed
-						// no need to check empty arguments, since len(printed) is always > 0 here
-						if len(printed) == len(args) {
-							return nil
-						}
 					}
 				}
 			case <-timeout_timer.C:

@@ -7,7 +7,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
-            "args": ["set", "accu.dhw.temp.min", "35"],
+            "args": ["list", "nanook", "mix"],
             "env": {
                 "MQTT": "10.1.0.12"
             },
