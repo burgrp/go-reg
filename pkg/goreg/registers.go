@@ -266,6 +266,10 @@ func Watch(registers *Registers) (<-chan NameAndMetadata, <-chan NameAndValue) {
 	return metadata, values
 }
 
+func (registers *Registers) SetValue(name string, value []byte) {
+	registers.mqtt.Publish(format_topic(name, "set"), 0, false, value)
+}
+
 func format_topic(name string, suffix string) string {
 	return "register/" + name + "/" + suffix
 }

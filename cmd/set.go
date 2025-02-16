@@ -42,10 +42,7 @@ func jsonEquals(a, b string) bool {
 		return false
 	}
 
-	equals, err := reflect.DeepEqual(valueA, valueB), nil
-	if err != nil {
-		return false
-	}
+	equals := reflect.DeepEqual(valueA, valueB)
 
 	return equals
 }
