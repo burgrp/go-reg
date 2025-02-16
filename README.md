@@ -126,6 +126,7 @@ For more information on registers over MQTT, see: https://github.com/burgrp/go-r
 * [reg list](#reg-list)	 - List all known registers
 * [reg provide](#reg-provide)	 - Provide a register
 * [reg set](#reg-set)	 - Write a register
+* [reg surp](#reg-surp)	 - Starts the SURP bridge
 * [reg version](#reg-version)	 - Show version
 
 #### reg get
@@ -248,6 +249,33 @@ reg set <register> <value> [flags]
   -h, --help               help for set
   -s, --stay               Stay connected, read values from stdin and write changes to stdout
   -t, --timeout duration   Timeout for waiting for the register to be set (default 5s)
+```
+
+##### SEE ALSO
+
+* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+
+#### reg surp
+
+Starts the SURP bridge
+
+##### Synopsis
+
+Starts the bridge between MQTT and the SURP protocol.
+Three environment variables are required:
+- MQTT: The MQTT broker to connect to
+- SURP_IF: The network interface to bind to
+- SURP_GROUP: The SURP group name to join
+	
+
+```
+reg surp [flags]
+```
+
+##### Options
+
+```
+  -h, --help   help for surp
 ```
 
 ##### SEE ALSO
