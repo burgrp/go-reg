@@ -50,6 +50,8 @@ func jsonEquals(a, b string) bool {
 func runSet(cmd *cobra.Command, args []string) error {
 
 	name := args[0]
+	desired := args[1]
+
 	stay, err := cmd.Flags().GetBool("stay")
 	if err != nil {
 		return err
@@ -61,9 +63,6 @@ func runSet(cmd *cobra.Command, args []string) error {
 	}
 	reader, writer := goreg.Consume(registers, name, json_serializer, json_deserializer)
 
-	desired := args[1]
-	writer <- desired
-
 	timeout, error := cmd.Flags().GetDuration("timeout")
 	if error != nil {
 		return error
@@ -72,12 +71,15 @@ func runSet(cmd *cobra.Command, args []string) error {
 	timeout_timer := time.NewTimer(timeout)
 	defer timeout_timer.Stop()
 
+	writer <- desired
+
 Loop:
 	for {
 		select {
 		case <-timeout_timer.C:
 			return errors.New("timeout waiting for register to be set")
 		case value := <-reader:
+			println(value)
 			if jsonEquals(value, desired) {
 				break Loop
 			}

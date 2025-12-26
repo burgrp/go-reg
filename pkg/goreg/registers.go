@@ -50,9 +50,9 @@ func NewRegisters() (*Registers, error) {
 
 // Consume creates a new register client with the given name.
 func Consume[T comparable](registers *Registers, name string, serialize Serialize[T], deserialize Deserialize[T]) (<-chan T, chan<- T) {
-	readerPrimary := make(chan []byte)
-	readerSecondary := make(chan T)
-	foreignGet := make(chan bool)
+	readerPrimary := make(chan []byte, 1)
+	readerSecondary := make(chan T, 1)
+	foreignGet := make(chan struct{})
 	writer := make(chan T)
 
 	var NULL T
@@ -69,16 +69,20 @@ func Consume[T comparable](registers *Registers, name string, serialize Serializ
 	}()
 
 	registers.mqtt.Subscribe(format_topic(name, "is"), 0, func(client mqtt.Client, msg mqtt.Message) {
+		v := msg.Payload()
 		select {
-		case readerPrimary <- msg.Payload():
-		default: // drop value
+		case readerPrimary <- v:
+		default:
+			// buffer full, overwrite old value
+			<-readerPrimary
+			readerPrimary <- v
 		}
 	})
 
 	registers.mqtt.Subscribe(format_topic(name, "get"), 0, func(client mqtt.Client, msg mqtt.Message) {
 		select {
-		case foreignGet <- true:
-		default: // drop value
+		case foreignGet <- struct{}{}:
+		default: // ignore
 		}
 	})
 
@@ -117,7 +121,10 @@ func Consume[T comparable](registers *Registers, name string, serialize Serializ
 
 				select {
 				case readerSecondary <- value:
-				default: // drop value
+				default:
+					// buffer full, overwrite old value
+					<-readerSecondary
+					readerSecondary <- value
 				}
 			}
 
@@ -187,7 +194,10 @@ func Provide[T comparable](registers *Registers, name string, serialize Serializ
 		v := deserialize(msg.Payload())
 		select {
 		case reader <- v:
-		default: // drop value
+		default:
+			// buffer full, overwrite old value
+			<-reader
+			reader <- v
 		}
 	})
 
@@ -198,7 +208,10 @@ func Provide[T comparable](registers *Registers, name string, serialize Serializ
 				publish <- v
 				select {
 				case reader <- value:
-				default: // drop value
+				default:
+					// buffer full, overwrite old value
+					<-reader
+					reader <- value
 				}
 			}
 		}
@@ -251,7 +264,10 @@ func Watch(registers *Registers) (<-chan NameAndMetadata, <-chan NameAndValue) {
 		json.Unmarshal(msg.Payload(), &md)
 		select {
 		case metadata <- NameAndMetadata{name, md}:
-		default: // drop value
+		default:
+			// buffer full, overwrite old value
+			<-metadata
+			metadata <- NameAndMetadata{name, md}
 		}
 	})
 
@@ -259,7 +275,10 @@ func Watch(registers *Registers) (<-chan NameAndMetadata, <-chan NameAndValue) {
 		parsed_topic := strings.Split(msg.Topic(), "/")
 		select {
 		case values <- NameAndValue{parsed_topic[1], msg.Payload()}:
-		default: // drop value
+		default:
+			// buffer full, overwrite old value
+			<-values
+			values <- NameAndValue{parsed_topic[1], msg.Payload()}
 		}
 	})
 
