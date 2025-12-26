@@ -262,24 +262,12 @@ func Watch(registers *Registers) (<-chan NameAndMetadata, <-chan NameAndValue) {
 		name := parsed_topic[1]
 		var md Metadata
 		json.Unmarshal(msg.Payload(), &md)
-		select {
-		case metadata <- NameAndMetadata{name, md}:
-		default:
-			// buffer full, overwrite old value
-			<-metadata
-			metadata <- NameAndMetadata{name, md}
-		}
+		metadata <- NameAndMetadata{name, md}
 	})
 
 	registers.mqtt.Subscribe("register/+/is", 0, func(client mqtt.Client, msg mqtt.Message) {
 		parsed_topic := strings.Split(msg.Topic(), "/")
-		select {
-		case values <- NameAndValue{parsed_topic[1], msg.Payload()}:
-		default:
-			// buffer full, overwrite old value
-			<-values
-			values <- NameAndValue{parsed_topic[1], msg.Payload()}
-		}
+		values <- NameAndValue{parsed_topic[1], msg.Payload()}
 	})
 
 	return metadata, values
