@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/burgrp/go-reg/pkg/reg"
+	"github.com/burgrp/go-reg/reg"
 	"os"
 	"reflect"
 	"time"

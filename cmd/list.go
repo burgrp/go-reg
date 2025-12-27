@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/burgrp/go-reg/pkg/reg"
+	"github.com/burgrp/go-reg/reg"
 	"strings"
 	"time"
 

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/burgrp/go-reg/pkg/reg"
+	"github.com/burgrp/go-reg/reg"
 	"os"
 
 	"github.com/spf13/cobra"
