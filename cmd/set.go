@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"goreg/pkg/goreg"
+	"go-reg/pkg/goreg"
 	"os"
 	"reflect"
 	"time"

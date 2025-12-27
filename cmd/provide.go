@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"goreg/pkg/goreg"
+	"go-reg/pkg/goreg"
 	"os"
 
 	"github.com/spf13/cobra"

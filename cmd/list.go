@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"goreg/pkg/goreg"
+	"go-reg/pkg/goreg"
 	"strings"
 	"time"
 

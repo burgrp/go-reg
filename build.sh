@@ -18,7 +18,7 @@ function build() {
     CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
     -o bin/reg-$goos-$goarch \
     --ldflags '-extldflags "-static"' \
-    --ldflags="-X 'goreg/cmd.Version=$VERSION'" \
+    --ldflags="-X 'go-reg/cmd.Version=$VERSION'" \
     main.go
 }
 
