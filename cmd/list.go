@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"go-reg/pkg/goreg"
+	"github.com/burgrp/go-reg/pkg/reg"
 	"strings"
 	"time"
 
@@ -24,7 +24,7 @@ func init() {
 	listCmd.Flags().DurationP("timeout", "t", 5*time.Second, "Timeout for waiting for advertise challenge to be answered")
 }
 
-func printMetadata(metadata goreg.NameAndMetadata) {
+func printMetadata(metadata reg.NameAndMetadata) {
 	m := ""
 	for k, v := range metadata.Metadata {
 		m += fmt.Sprintf(" %s:%s", k, v)
@@ -32,7 +32,7 @@ func printMetadata(metadata goreg.NameAndMetadata) {
 	fmt.Println(metadata.Name + " -" + m)
 }
 
-func printValue(value goreg.NameAndValue) {
+func printValue(value reg.NameAndValue) {
 	fmt.Println(value.Name + " = " + string(value.Value))
 }
 
@@ -60,11 +60,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		return error
 	}
 
-	registers, err := goreg.NewRegisters()
+	registers, err := reg.NewRegisters()
 	if err != nil {
 		return err
 	}
-	metadata, values := goreg.Watch(registers)
+	metadata, values := reg.Watch(registers)
 
 	if stay {
 		for {

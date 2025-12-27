@@ -1,4 +1,4 @@
-module go-reg
+module github.com/burgrp/go-reg
 
 go 1.22.4
 

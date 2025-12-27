@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"go-reg/pkg/goreg"
+	"github.com/burgrp/go-reg/pkg/reg"
 
 	"github.com/spf13/cobra"
 )
@@ -29,11 +29,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	registers, err := goreg.NewRegisters()
+	registers, err := reg.NewRegisters()
 	if err != nil {
 		return err
 	}
-	reader, _ := goreg.Consume(registers, name, json_serializer, json_deserializer)
+	reader, _ := reg.Consume(registers, name, json_serializer, json_deserializer)
 
 	for {
 		value := <-reader

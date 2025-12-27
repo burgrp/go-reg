@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go-reg/pkg/goreg"
+	"github.com/burgrp/go-reg/pkg/reg"
 	"os"
 	"reflect"
 	"time"
@@ -57,11 +57,11 @@ func runSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	registers, err := goreg.NewRegisters()
+	registers, err := reg.NewRegisters()
 	if err != nil {
 		return err
 	}
-	reader, writer := goreg.Consume(registers, name, json_serializer, json_deserializer)
+	reader, writer := reg.Consume(registers, name, json_serializer, json_deserializer)
 
 	timeout, error := cmd.Flags().GetDuration("timeout")
 	if error != nil {

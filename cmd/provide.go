@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"go-reg/pkg/goreg"
+	"github.com/burgrp/go-reg/pkg/reg"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -31,7 +31,7 @@ func runProvide(cmd *cobra.Command, args []string) error {
 
 	name := args[0]
 
-	metadata := goreg.Metadata{}
+	metadata := reg.Metadata{}
 	json.Unmarshal([]byte(args[1]), &metadata)
 
 	value := ""
@@ -44,11 +44,11 @@ func runProvide(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	registers, err := goreg.NewRegisters()
+	registers, err := reg.NewRegisters()
 	if err != nil {
 		return err
 	}
-	reader, writer := goreg.Provide(registers, name, json_serializer, json_deserializer, metadata)
+	reader, writer := reg.Provide(registers, name, json_serializer, json_deserializer, metadata)
 
 	go func() {
 		for {

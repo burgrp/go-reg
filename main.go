@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 package main
 
-import "go-reg/cmd"
+import "github.com/burgrp/go-reg/cmd"
 
 func main() {
 	cmd.Execute()
