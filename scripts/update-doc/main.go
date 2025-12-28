@@ -3,9 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"goreg/cmd"
 	"os"
 	"strings"
+
+	"github.com/burgrp/go-reg/cmd"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"

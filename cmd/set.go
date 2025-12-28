@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/burgrp/go-reg/reg"
 	"os"
 	"reflect"
 	"time"
+
+	"github.com/burgrp/go-reg/reg"
 
 	"github.com/spf13/cobra"
 )
@@ -79,7 +80,6 @@ Loop:
 		case <-timeout_timer.C:
 			return errors.New("timeout waiting for register to be set")
 		case value := <-reader:
-			println(value)
 			if jsonEquals(value, desired) {
 				break Loop
 			}

@@ -2,16 +2,17 @@ package main
 
 import (
 	"fmt"
-	goreg "goreg/pkg/goreg"
+
+	"github.com/burgrp/go-reg/reg"
 )
 
 func main() {
-	registers, error := goreg.NewRegisters()
+	registers, error := reg.NewRegisters()
 	if error != nil {
 		panic(error)
 	}
 
-	reader, writer := goreg.ProvideNumber(registers, "test.a", goreg.Metadata{
+	reader, writer := reg.ProvideNumber(registers, "test.a", reg.Metadata{
 		"device": "test",
 		"type":   "number",
 		"unit":   "°C",
