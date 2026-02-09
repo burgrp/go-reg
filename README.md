@@ -95,18 +95,18 @@ Download binary for your platform from the latest [release](https://github.com/b
 
 ```sh
 go mod tidy
-go build -o reg
+go build -o mreg
 ```
 
 ### Reference
 
-#### reg
+#### mreg
 
-reg is a command line tool for working with registers over MQTT.
+mreg is a command line tool for working with registers over MQTT.
 
 ##### Synopsis
 
-The reg command is a command line tool for working with registers over MQTT.
+The mreg command is a command line tool for working with registers over MQTT.
 It allows you to read, write and list registers.
 Furthermore it can provide a 'virtual' register which is convenient for debugging of consumers of the register.
 
@@ -117,19 +117,18 @@ For more information on registers over MQTT, see: https://github.com/burgrp/go-r
 ##### Options
 
 ```
-  -h, --help   help for reg
+  -h, --help   help for mreg
 ```
 
 ##### SEE ALSO
 
-* [reg get](#reg-get)	 - Read a register
-* [reg list](#reg-list)	 - List all known registers
-* [reg provide](#reg-provide)	 - Provide a register
-* [reg set](#reg-set)	 - Write a register
-* [reg surp](#reg-surp)	 - Starts the SURP bridge
-* [reg version](#reg-version)	 - Show version
+* [mreg get](#mreg-get)	 - Read a register
+* [mreg list](#mreg-list)	 - List all known registers
+* [mreg provide](#mreg-provide)	 - Provide a register
+* [mreg set](#mreg-set)	 - Write a register
+* [mreg version](#mreg-version)	 - Show version
 
-#### reg get
+#### mreg get
 
 Read a register
 
@@ -139,7 +138,7 @@ Reads the specified register.
 With --stay flag, the command will remain connected and write any changes to stdout.
 
 ```
-reg get <register> [flags]
+mreg get <register> [flags]
 ```
 
 ##### Options
@@ -151,19 +150,19 @@ reg get <register> [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
-#### reg help
+#### mreg help
 
 Help about any command
 
 ##### Synopsis
 
 Help provides help for any command in the application.
-Simply type reg help [path to command] for full details.
+Simply type mreg help [path to command] for full details.
 
 ```
-reg help [command] [flags]
+mreg help [command] [flags]
 ```
 
 ##### Options
@@ -174,9 +173,9 @@ reg help [command] [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
-#### reg list
+#### mreg list
 
 List all known registers
 
@@ -187,7 +186,7 @@ With --stay flag, the command will remain connected and write any changes to std
 If registers are specified, only those will be listed.
 
 ```
-reg list [<reg1> <reg2> ...] [flags]
+mreg list [<reg1> <reg2> ...] [flags]
 ```
 
 ##### Options
@@ -200,9 +199,9 @@ reg list [<reg1> <reg2> ...] [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
-#### reg provide
+#### mreg provide
 
 Provide a register
 
@@ -215,7 +214,7 @@ Values for registers are defined using JSON expressions, such as true, false, 3.
 Additionally, subsequent values can be read from stdin and written to stdout.
 
 ```
-reg provide <name> <meta> [<value>] [flags]
+mreg provide <name> <meta> [<value>] [flags]
 ```
 
 ##### Options
@@ -227,9 +226,9 @@ reg provide <name> <meta> [<value>] [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
-#### reg set
+#### mreg set
 
 Write a register
 
@@ -240,7 +239,7 @@ With --stay flag, the command will remain connected, read values from stdin and 
 Values are specified as JSON expressions, e.g. true, false, 3.14, "hello world" or null.
 
 ```
-reg set <register> <value> [flags]
+mreg set <register> <value> [flags]
 ```
 
 ##### Options
@@ -253,36 +252,9 @@ reg set <register> <value> [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
-#### reg surp
-
-Starts the SURP bridge
-
-##### Synopsis
-
-Starts the bridge between MQTT and the SURP protocol.
-Three environment variables are required:
-- MQTT: The MQTT broker to connect to
-- SURP_IF: The network interface to bind to
-- SURP_GROUP: The SURP group name to join
-	
-
-```
-reg surp [flags]
-```
-
-##### Options
-
-```
-  -h, --help   help for surp
-```
-
-##### SEE ALSO
-
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
-
-#### reg version
+#### mreg version
 
 Show version
 
@@ -291,7 +263,7 @@ Show version
 Shows version of reg command line tool.
 
 ```
-reg version [flags]
+mreg version [flags]
 ```
 
 ##### Options
@@ -302,5 +274,5 @@ reg version [flags]
 
 ##### SEE ALSO
 
-* [reg](#reg)	 - reg is a command line tool for working with registers over MQTT.
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 

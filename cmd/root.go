@@ -7,9 +7,9 @@ import (
 )
 
 var RootCmd = &cobra.Command{
-	Use:   "reg",
-	Short: "reg is a command line tool for working with registers over MQTT.",
-	Long: `The reg command is a command line tool for working with registers over MQTT.
+	Use:   "mreg",
+	Short: "mreg is a command line tool for working with registers over MQTT.",
+	Long: `The mreg command is a command line tool for working with registers over MQTT.
 It allows you to read, write and list registers.
 Furthermore it can provide a 'virtual' register which is convenient for debugging of consumers of the register.
 
