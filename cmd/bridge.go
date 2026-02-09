@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -26,19 +27,38 @@ var bridgeCmd = &cobra.Command{
 Registers on MQTT will appear in REST registry and vice versa.
 Value changes on either side propagate to the other in real-time.
 Change requests work bidirectionally with loop prevention.
+Metadata changes are synchronized automatically.
 
 The REGISTRY environment variable must be set to the REST registry URL.
 
-Example:
+Filtering:
+  Use --include and --exclude flags to control which registers are synced.
+  Patterns use standard glob syntax (* matches any sequence, ? matches one char).
+  Exclude patterns take precedence over include patterns.
+  If no filters specified, all registers are synced.
+
+Examples:
+  # Sync all registers
   export MQTT=localhost:1883
   export REGISTRY=http://localhost:8080
-  mreg bridge --ttl 30s`,
+  mreg bridge --ttl 30s
+
+  # Sync only temperature sensors
+  mreg bridge --include "temp*" --include "*-temperature"
+
+  # Sync all sensors except debug sensors
+  mreg bridge --include "sensors/*" --exclude "sensors/debug/*"
+
+  # Multiple patterns
+  mreg bridge --include "sensor-*" --include "actuator-*" --exclude "*-test"`,
 	RunE: runBridge,
 }
 
 func init() {
 	RootCmd.AddCommand(bridgeCmd)
 	bridgeCmd.Flags().Duration("ttl", 10*time.Second, "Default TTL for registers in both registries")
+	bridgeCmd.Flags().StringSlice("include", []string{}, "Glob patterns for registers to include (can be specified multiple times)")
+	bridgeCmd.Flags().StringSlice("exclude", []string{}, "Glob patterns for registers to exclude (can be specified multiple times)")
 }
 
 type registerSync struct {
@@ -50,6 +70,7 @@ type registerSync struct {
 	mqttConsumer <-chan []byte // Read from MQTT
 
 	// REST side
+	restMetadata map[string]any                 // Track REST metadata for changes
 	restUpdates  chan<- any                     // Write to REST
 	restConsumer <-chan client.ValueAndMetadata // Read from REST
 
@@ -63,8 +84,18 @@ type registerSync struct {
 }
 
 func runBridge(cmd *cobra.Command, args []string) error {
-	// 1. Get TTL flag
+	// 1. Get flags
 	ttl, err := cmd.Flags().GetDuration("ttl")
+	if err != nil {
+		return err
+	}
+
+	includePatterns, err := cmd.Flags().GetStringSlice("include")
+	if err != nil {
+		return err
+	}
+
+	excludePatterns, err := cmd.Flags().GetStringSlice("exclude")
 	if err != nil {
 		return err
 	}
@@ -78,6 +109,12 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	log.Printf("MQTT broker: %s", os.Getenv("MQTT"))
 	log.Printf("REST registry: %s", os.Getenv("REGISTRY"))
 	log.Printf("Default TTL: %s", ttl)
+	if len(includePatterns) > 0 {
+		log.Printf("Include patterns: %v", includePatterns)
+	}
+	if len(excludePatterns) > 0 {
+		log.Printf("Exclude patterns: %v", excludePatterns)
+	}
 
 	// 3. Connect to MQTT
 	mqttRegs, err := reg.NewRegisters()
@@ -132,7 +169,7 @@ func runBridge(cmd *cobra.Command, args []string) error {
 				log.Println("MQTT metadata channel closed")
 				return nil
 			}
-			handleMQTTMetadata(ctx, md, restClient, mqttRegs, ttl, registerSyncs, &syncMu)
+			handleMQTTMetadata(ctx, md, restClient, mqttRegs, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
 
 		case val, ok := <-mqttValues:
 			if !ok {
@@ -146,9 +183,59 @@ func runBridge(cmd *cobra.Command, args []string) error {
 				log.Println("REST updates channel closed")
 				return nil
 			}
-			handleRESTUpdate(ctx, restUpdate, mqttRegs, restClient, ttl, registerSyncs, &syncMu)
+			handleRESTUpdate(ctx, restUpdate, mqttRegs, restClient, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
 		}
 	}
+}
+
+// shouldSyncRegister checks if a register should be synced based on include/exclude patterns
+func shouldSyncRegister(name string, includePatterns, excludePatterns []string) bool {
+	// No filters = sync everything
+	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
+		return true
+	}
+
+	// Check excludes first (higher priority)
+	for _, pattern := range excludePatterns {
+		matched, err := filepath.Match(pattern, name)
+		if err != nil {
+			log.Printf("Invalid exclude pattern %q: %v", pattern, err)
+			continue
+		}
+		if matched {
+			return false
+		}
+	}
+
+	// If includes specified, must match at least one
+	if len(includePatterns) > 0 {
+		for _, pattern := range includePatterns {
+			matched, err := filepath.Match(pattern, name)
+			if err != nil {
+				log.Printf("Invalid include pattern %q: %v", pattern, err)
+				continue
+			}
+			if matched {
+				return true
+			}
+		}
+		return false
+	}
+
+	return true
+}
+
+// metadataEqual compares two metadata maps for equality
+func metadataEqual(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // shouldPropagate checks if a value should be propagated to avoid loops
@@ -194,15 +281,34 @@ func handleMQTTMetadata(
 	restClient client.Client,
 	mqttRegs *reg.Registers,
 	ttl time.Duration,
+	includePatterns, excludePatterns []string,
 	registerSyncs map[string]*registerSync,
 	syncMu *sync.Mutex,
 ) {
-	syncMu.Lock()
-	if _, exists := registerSyncs[md.Name]; exists {
-		syncMu.Unlock()
+	// Check if register should be synced
+	if !shouldSyncRegister(md.Name, includePatterns, excludePatterns) {
 		return
 	}
+
+	syncMu.Lock()
+	existingSync, exists := registerSyncs[md.Name]
 	syncMu.Unlock()
+
+	if exists {
+		// Phase 4: Handle metadata update
+		restMetadata := mqttMetadataToREST(md.Metadata)
+		if !metadataEqual(existingSync.restMetadata, restMetadata) {
+			log.Printf("Metadata changed for MQTT register: %s", md.Name)
+			// Cancel existing sync and recreate
+			existingSync.cancel()
+			syncMu.Lock()
+			delete(registerSyncs, md.Name)
+			syncMu.Unlock()
+			// Fall through to recreate
+		} else {
+			return
+		}
+	}
 
 	log.Printf("Discovered MQTT register: %s", md.Name)
 
@@ -245,6 +351,7 @@ func handleMQTTMetadata(
 		mqttMetadata:  md.Metadata,
 		mqttProvider:  mqttWriter,
 		mqttConsumer:  mqttReader,
+		restMetadata:  restMetadata,
 		restUpdates:   restUpdates,
 		lastMQTTValue: nil,
 		lastRESTValue: nil,
@@ -296,17 +403,34 @@ func handleRESTUpdate(
 	mqttRegs *reg.Registers,
 	restClient client.Client,
 	ttl time.Duration,
+	includePatterns, excludePatterns []string,
 	registerSyncs map[string]*registerSync,
 	syncMu *sync.Mutex,
 ) {
+	// Check if register should be synced
+	if !shouldSyncRegister(update.Name, includePatterns, excludePatterns) {
+		return
+	}
+
 	syncMu.Lock()
-	sync, exists := registerSyncs[update.Name]
+	existingSync, exists := registerSyncs[update.Name]
 	syncMu.Unlock()
 
 	if exists {
-		// Already syncing, handle value update
-		handleRESTValueUpdate(sync, update)
-		return
+		// Phase 4: Check for metadata update
+		if !metadataEqual(existingSync.restMetadata, update.Metadata) {
+			log.Printf("Metadata changed for REST register: %s", update.Name)
+			// Cancel existing sync and recreate
+			existingSync.cancel()
+			syncMu.Lock()
+			delete(registerSyncs, update.Name)
+			syncMu.Unlock()
+			// Fall through to recreate
+		} else {
+			// Just a value update
+			handleRESTValueUpdate(existingSync, update)
+			return
+		}
 	}
 
 	// New REST register - create MQTT provider
@@ -351,6 +475,7 @@ func handleRESTUpdate(
 		mqttMetadata:  mqttMetadata,
 		mqttProvider:  mqttWriter,
 		mqttConsumer:  mqttReader,
+		restMetadata:  update.Metadata,
 		restConsumer:  restValues,
 		restUpdates:   nil, // No REST provider for this one
 		lastMQTTValue: nil,
