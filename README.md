@@ -122,11 +122,45 @@ For more information on registers over MQTT, see: https://github.com/burgrp/go-r
 
 ##### SEE ALSO
 
+* [mreg bridge](#mreg-bridge)	 - Bridge MQTT registers to REST registry
 * [mreg get](#mreg-get)	 - Read a register
 * [mreg list](#mreg-list)	 - List all known registers
 * [mreg provide](#mreg-provide)	 - Provide a register
 * [mreg set](#mreg-set)	 - Write a register
 * [mreg version](#mreg-version)	 - Show version
+
+#### mreg bridge
+
+Bridge MQTT registers to REST registry
+
+##### Synopsis
+
+Runs a one-way bridge that propagates MQTT registers to the REST registry.
+
+MQTT registers will automatically appear in the REST registry with their values and metadata.
+When MQTT register values change, they are propagated to REST in real-time.
+
+The REGISTRY environment variable must be set to the REST registry URL.
+
+Example:
+  export MQTT=localhost:1883
+  export REGISTRY=http://localhost:8080
+  mreg bridge --ttl 30s
+
+```
+mreg bridge [flags]
+```
+
+##### Options
+
+```
+  -h, --help           help for bridge
+      --ttl duration   Default TTL for MQTT registers in REST registry (default 10s)
+```
+
+##### SEE ALSO
+
+* [mreg](#mreg)	 - mreg is a command line tool for working with registers over MQTT.
 
 #### mreg get
 
