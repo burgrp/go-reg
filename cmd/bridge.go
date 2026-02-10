@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/burgrp/go-reg/reg"
-	"github.com/burgrp/reg/pkg/client"
-	clientfactory "github.com/burgrp/reg/pkg/client/factory"
+	"github.com/burgrp/reg/pkg/wire/rest"
 	"github.com/spf13/cobra"
 )
 
@@ -83,9 +82,7 @@ type registerSync struct {
 	mqttConsumer <-chan []byte // Read from MQTT
 
 	// REST side
-	restMetadata map[string]any                 // Track REST metadata for changes
-	restUpdates  chan<- any                     // Write to REST
-	restConsumer <-chan client.ValueAndMetadata // Read from REST
+	restMetadata map[string]any // Track REST metadata for changes
 
 	// Loop prevention
 	lastMQTTValue  []byte    // Track last value from MQTT
@@ -96,15 +93,26 @@ type registerSync struct {
 	cancel context.CancelFunc
 }
 
-// batchUpdate holds pending MQTT to REST updates
-type batchUpdate struct {
-	mu      sync.Mutex
-	pending map[string]pendingUpdate
+// batchManager holds pending MQTT to REST updates
+type batchManager struct {
+	mu              sync.Mutex
+	pending         map[string]*batchEntry
+	providerClient  *rest.ProviderClient
+	registerSyncs   map[string]*registerSync
+	defaultTTL      time.Duration
 }
 
-type pendingUpdate struct {
-	sync  *registerSync
-	value []byte
+type batchEntry struct {
+	value    any
+	metadata map[string]any
+	ttl      time.Duration
+}
+
+// restRegisterUpdate represents a REST register update
+type restRegisterUpdate struct {
+	Name     string
+	Value    any
+	Metadata map[string]any
 }
 
 func runBridge(cmd *cobra.Command, args []string) error {
@@ -156,11 +164,10 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	}
 	logInfo("Connected to MQTT broker")
 
-	// 4. Connect to REST
-	restClient, err := clientfactory.NewClientFromEnv()
-	if err != nil {
-		return fmt.Errorf("failed to connect to REST registry: %w", err)
-	}
+	// 4. Connect to REST using low-level clients
+	registryURL := os.Getenv("REGISTRY")
+	consumerClient := rest.NewConsumerClient(registryURL)
+	providerClient := rest.NewProviderClient(registryURL)
 	logInfo("Connected to REST registry")
 
 	// 5. Setup context and signal handling
@@ -179,20 +186,21 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	mqttMetadata, mqttValues := reg.Watch(mqttRegs)
 	logInfo("Watching MQTT registers...")
 
-	// 7. Watch REST registers
-	restUpdates, err := restClient.ConsumeAll(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to consume REST registers: %w", err)
-	}
+	// 7. Start REST consumer poller
+	restUpdates := make(chan restRegisterUpdate, 100)
+	go pollRESTRegisters(ctx, consumerClient, restUpdates)
 	logInfo("Watching REST registers...")
 
 	// 8. Track active syncs
 	registerSyncs := make(map[string]*registerSync)
 	var syncMu sync.Mutex
 
-	// 9. Setup batch updates for MQTT to REST
-	batch := &batchUpdate{
-		pending: make(map[string]pendingUpdate),
+	// 9. Setup batch manager for MQTT to REST updates
+	batchMgr := &batchManager{
+		pending:        make(map[string]*batchEntry),
+		providerClient: providerClient,
+		registerSyncs:  registerSyncs,
+		defaultTTL:     ttl,
 	}
 
 	// Start batch flusher
@@ -205,7 +213,7 @@ func runBridge(cmd *cobra.Command, args []string) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				flushBatch(batch)
+				flushBatch(ctx, batchMgr, &syncMu)
 			}
 		}
 	}()
@@ -222,31 +230,92 @@ func runBridge(cmd *cobra.Command, args []string) error {
 				logInfo("MQTT metadata channel closed")
 				return nil
 			}
-			handleMQTTMetadata(ctx, md, restClient, mqttRegs, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
+			handleMQTTMetadata(ctx, md, providerClient, consumerClient, mqttRegs, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
 
 		case val, ok := <-mqttValues:
 			if !ok {
 				logInfo("MQTT values channel closed")
 				return nil
 			}
-			handleMQTTValueBatched(val, registerSyncs, &syncMu, batch)
+			handleMQTTValueBatched(val, registerSyncs, &syncMu, batchMgr)
 
 		case restUpdate, ok := <-restUpdates:
 			if !ok {
 				logInfo("REST updates channel closed")
 				return nil
 			}
-			handleRESTUpdate(ctx, restUpdate, mqttRegs, restClient, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
+			handleRESTUpdate(ctx, restUpdate, mqttRegs, providerClient, consumerClient, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
 		}
 	}
 }
 
-// flushBatch sends all pending MQTT to REST updates
-func flushBatch(batch *batchUpdate) {
-	batch.mu.Lock()
-	pending := batch.pending
-	batch.pending = make(map[string]pendingUpdate)
-	batch.mu.Unlock()
+// pollRESTRegisters continuously polls the REST registry for all register updates
+func pollRESTRegisters(ctx context.Context, consumerClient *rest.ConsumerClient, updates chan<- restRegisterUpdate) {
+	defer close(updates)
+
+	pollInterval := 5 * time.Second
+	var lastRegisters map[string]rest.ConsumerGetRegister
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Long poll for register updates (nil names = all registers)
+		registers, err := consumerClient.GetRegisters(ctx, nil, pollInterval)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			logVerbose("REST poll error: %v", err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		// Detect changes and new registers
+		for name, reg := range registers {
+			lastReg, existed := lastRegisters[name]
+
+			// Send update if new register or value/metadata changed
+			if !existed || !registersEqual(lastReg, reg) {
+				select {
+				case updates <- restRegisterUpdate{
+					Name:     name,
+					Value:    reg.Value,
+					Metadata: reg.Metadata,
+				}:
+					logVerbose("REST register update: %s", name)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		lastRegisters = registers
+	}
+}
+
+// registersEqual checks if two REST registers are equal
+func registersEqual(a, b rest.ConsumerGetRegister) bool {
+	// Compare values
+	aJSON, _ := json.Marshal(a.Value)
+	bJSON, _ := json.Marshal(b.Value)
+	if !bytes.Equal(aJSON, bJSON) {
+		return false
+	}
+
+	// Compare metadata
+	return metadataEqual(a.Metadata, b.Metadata)
+}
+
+// flushBatch sends all pending MQTT to REST updates using the batch API
+func flushBatch(ctx context.Context, batchMgr *batchManager, syncMu *sync.Mutex) {
+	batchMgr.mu.Lock()
+	pending := batchMgr.pending
+	batchMgr.pending = make(map[string]*batchEntry)
+	batchMgr.mu.Unlock()
 
 	if len(pending) == 0 {
 		return
@@ -254,17 +323,33 @@ func flushBatch(batch *batchUpdate) {
 
 	logVerbose("Flushing batch with %d updates", len(pending))
 
-	for name, update := range pending {
-		restValue := mqttValueToREST(update.value)
-
-		select {
-		case update.sync.restUpdates <- restValue:
-			recordPropagation(update.sync, update.value, true)
-			logVerbose("Batched sync %s to REST: %v", name, restValue)
-		default:
-			log.Printf("Warning: failed to sync %s, channel busy", name)
+	// Build batch request
+	updates := make(map[string]rest.RegisterUpdate)
+	for name, entry := range pending {
+		updates[name] = rest.RegisterUpdate{
+			Value:    entry.value,
+			Metadata: entry.metadata,
+			TTL:      entry.ttl,
 		}
 	}
+
+	// Send batch update to REST
+	err := batchMgr.providerClient.SetRegisters(ctx, updates)
+	if err != nil {
+		log.Printf("Warning: batch update failed: %v", err)
+		return
+	}
+
+	// Record propagation for all successfully updated registers
+	syncMu.Lock()
+	for name, entry := range pending {
+		if sync, exists := batchMgr.registerSyncs[name]; exists {
+			valueBytes, _ := json.Marshal(entry.value)
+			recordPropagation(sync, valueBytes, true)
+			logVerbose("Batched sync %s to REST: %v", name, entry.value)
+		}
+	}
+	syncMu.Unlock()
 }
 
 // shouldSyncRegister checks if a register should be synced based on include/exclude patterns
@@ -357,7 +442,8 @@ func recordPropagation(sync *registerSync, value []byte, fromMQTT bool) {
 func handleMQTTMetadata(
 	ctx context.Context,
 	md reg.NameAndMetadata,
-	restClient client.Client,
+	providerClient *rest.ProviderClient,
+	consumerClient *rest.ConsumerClient,
 	mqttRegs *reg.Registers,
 	ttl time.Duration,
 	includePatterns, excludePatterns []string,
@@ -394,15 +480,7 @@ func handleMQTTMetadata(
 	regCtx, regCancel := context.WithCancel(ctx)
 	restMetadata := mqttMetadataToREST(md.Metadata)
 
-	// Create REST provider
-	restUpdates, restChangeRequests, err := restClient.Provide(regCtx, md.Name, nil, restMetadata, ttl)
-	if err != nil {
-		log.Printf("Error creating REST provider for %s: %v", md.Name, err)
-		regCancel()
-		return
-	}
-
-	// Also consume from MQTT (using string channels)
+	// Consume from MQTT (using string channels)
 	mqttReaderStr, mqttWriterStr := reg.ConsumeString(mqttRegs, md.Name)
 
 	// Convert string channels to byte channels
@@ -431,7 +509,6 @@ func handleMQTTMetadata(
 		mqttProvider:  mqttWriter,
 		mqttConsumer:  mqttReader,
 		restMetadata:  restMetadata,
-		restUpdates:   restUpdates,
 		lastMQTTValue: nil,
 		lastRESTValue: nil,
 		cancel:        regCancel,
@@ -441,8 +518,8 @@ func handleMQTTMetadata(
 	registerSyncs[md.Name] = sync
 	syncMu.Unlock()
 
-	// Handle REST change requests → send to MQTT
-	go handleRESTChangeRequests(sync, restChangeRequests)
+	// Start polling for REST change requests → send to MQTT
+	go pollRESTChangeRequests(regCtx, providerClient, md.Name, mqttWriter)
 
 	logVerbose("Started bidirectional sync for %s", md.Name)
 }
@@ -451,7 +528,7 @@ func handleMQTTValueBatched(
 	val reg.NameAndValue,
 	registerSyncs map[string]*registerSync,
 	syncMu *sync.Mutex,
-	batch *batchUpdate,
+	batchMgr *batchManager,
 ) {
 	syncMu.Lock()
 	sync, exists := registerSyncs[val.Name]
@@ -466,22 +543,27 @@ func handleMQTTValueBatched(
 		return
 	}
 
+	// Convert value to REST format
+	restValue := mqttValueToREST(val.Value)
+
 	// Add to batch instead of sending immediately
-	batch.mu.Lock()
-	batch.pending[val.Name] = pendingUpdate{
-		sync:  sync,
-		value: val.Value,
+	batchMgr.mu.Lock()
+	batchMgr.pending[val.Name] = &batchEntry{
+		value:    restValue,
+		metadata: sync.restMetadata,
+		ttl:      batchMgr.defaultTTL,
 	}
-	batch.mu.Unlock()
+	batchMgr.mu.Unlock()
 
 	logVerbose("Queued %s for batch update", val.Name)
 }
 
 func handleRESTUpdate(
 	ctx context.Context,
-	update client.RegisterUpdate,
+	update restRegisterUpdate,
 	mqttRegs *reg.Registers,
-	restClient client.Client,
+	providerClient *rest.ProviderClient,
+	consumerClient *rest.ConsumerClient,
 	ttl time.Duration,
 	includePatterns, excludePatterns []string,
 	registerSyncs map[string]*registerSync,
@@ -542,22 +624,12 @@ func handleRESTUpdate(
 		close(mqttWriterStr)
 	}()
 
-	// Create REST consumer
-	restValues, restRequests, err := restClient.Consume(regCtx, update.Name)
-	if err != nil {
-		log.Printf("Error consuming REST register %s: %v", update.Name, err)
-		regCancel()
-		return
-	}
-
 	newSync := &registerSync{
 		name:          update.Name,
 		mqttMetadata:  mqttMetadata,
 		mqttProvider:  mqttWriter,
 		mqttConsumer:  mqttReader,
 		restMetadata:  update.Metadata,
-		restConsumer:  restValues,
-		restUpdates:   nil, // No REST provider for this one
 		lastMQTTValue: nil,
 		lastRESTValue: nil,
 		cancel:        regCancel,
@@ -575,16 +647,13 @@ func handleRESTUpdate(
 		logVerbose("Synced %s to MQTT: %v", update.Name, update.Value)
 	}
 
-	// Handle REST value updates → MQTT
-	go handleRESTToMQTTSync(newSync, restValues)
-
 	// Handle MQTT set requests → REST change requests
-	go handleMQTTSetRequests(newSync, mqttReader, restRequests)
+	go handleMQTTSetRequests(regCtx, consumerClient, update.Name, mqttReader)
 
 	logVerbose("Started bidirectional sync for %s (from REST)", update.Name)
 }
 
-func handleRESTValueUpdate(sync *registerSync, update client.RegisterUpdate) {
+func handleRESTValueUpdate(sync *registerSync, update restRegisterUpdate) {
 	restValueBytes := restValueToMQTT(update.Value)
 
 	if !shouldPropagate(sync, restValueBytes, false) {
@@ -600,48 +669,66 @@ func handleRESTValueUpdate(sync *registerSync, update client.RegisterUpdate) {
 	}
 }
 
-func handleRESTChangeRequests(sync *registerSync, changeRequests <-chan any) {
-	for req := range changeRequests {
-		reqBytes := restValueToMQTT(req)
-		logVerbose("REST change request for %s: %v", sync.name, req)
+// pollRESTChangeRequests polls for consumer change requests from REST and forwards to MQTT
+// This is used when MQTT provides a register to REST, and REST consumers can request changes
+func pollRESTChangeRequests(ctx context.Context, providerClient *rest.ProviderClient, name string, mqttWriter chan<- []byte) {
+	pollInterval := 30 * time.Second
 
+	for {
 		select {
-		case sync.mqttProvider <- reqBytes:
-			logVerbose("Forwarded change request to MQTT for %s", sync.name)
+		case <-ctx.Done():
+			return
 		default:
-			log.Printf("Warning: failed to forward change request for %s", sync.name)
 		}
-	}
-}
 
-func handleRESTToMQTTSync(sync *registerSync, restValues <-chan client.ValueAndMetadata) {
-	for update := range restValues {
-		restValueBytes := restValueToMQTT(update.Value)
-
-		if !shouldPropagate(sync, restValueBytes, false) {
+		// Poll for change requests from REST consumers
+		requests, err := providerClient.GetChangeRequests(ctx, []string{name}, pollInterval)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			logVerbose("Error polling change requests for %s: %v", name, err)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		select {
-		case sync.mqttProvider <- restValueBytes:
-			recordPropagation(sync, restValueBytes, false)
-			logVerbose("Synced %s to MQTT: %v", sync.name, update.Value)
-		default:
-			log.Printf("Warning: failed to sync %s to MQTT, channel busy", sync.name)
+		// Forward change request to MQTT
+		if value, exists := requests[name]; exists {
+			reqBytes := restValueToMQTT(value)
+			logVerbose("REST change request for %s: %v", name, value)
+
+			select {
+			case mqttWriter <- reqBytes:
+				logVerbose("Forwarded change request to MQTT for %s", name)
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("Warning: failed to forward change request for %s", name)
+			}
 		}
 	}
 }
 
-func handleMQTTSetRequests(sync *registerSync, mqttReader <-chan []byte, restRequests chan<- any) {
-	for setReq := range mqttReader {
-		restValue := mqttValueToREST(setReq)
-		logVerbose("MQTT set request for %s: %v", sync.name, restValue)
-
+// handleMQTTSetRequests forwards MQTT set requests to REST as consumer change requests
+func handleMQTTSetRequests(ctx context.Context, consumerClient *rest.ConsumerClient, name string, mqttReader <-chan []byte) {
+	for {
 		select {
-		case restRequests <- restValue:
-			logVerbose("Forwarded set request to REST for %s", sync.name)
-		default:
-			log.Printf("Warning: failed to forward set request for %s", sync.name)
+		case <-ctx.Done():
+			return
+		case setReq, ok := <-mqttReader:
+			if !ok {
+				return
+			}
+
+			restValue := mqttValueToREST(setReq)
+			logVerbose("MQTT set request for %s: %v", name, restValue)
+
+			err := consumerClient.RequestChange(ctx, name, restValue)
+			if err != nil {
+				log.Printf("Warning: failed to forward set request for %s: %v", name, err)
+			} else {
+				logVerbose("Forwarded set request to REST for %s", name)
+			}
 		}
 	}
 }
