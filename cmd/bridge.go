@@ -54,11 +54,24 @@ Examples:
 	RunE: runBridge,
 }
 
+var verbose bool
+
 func init() {
 	RootCmd.AddCommand(bridgeCmd)
 	bridgeCmd.Flags().Duration("ttl", 10*time.Second, "Default TTL for registers in both registries")
 	bridgeCmd.Flags().StringSlice("include", []string{}, "Glob patterns for registers to include (can be specified multiple times)")
 	bridgeCmd.Flags().StringSlice("exclude", []string{}, "Glob patterns for registers to exclude (can be specified multiple times)")
+	bridgeCmd.Flags().Duration("batch-interval", 200*time.Millisecond, "Batch interval for MQTT to REST updates")
+}
+
+func logVerbose(format string, args ...any) {
+	if verbose {
+		log.Printf(format, args...)
+	}
+}
+
+func logInfo(format string, args ...any) {
+	log.Printf(format, args...)
 }
 
 type registerSync struct {
@@ -83,9 +96,28 @@ type registerSync struct {
 	cancel context.CancelFunc
 }
 
+// batchUpdate holds pending MQTT to REST updates
+type batchUpdate struct {
+	mu      sync.Mutex
+	pending map[string]pendingUpdate
+}
+
+type pendingUpdate struct {
+	sync  *registerSync
+	value []byte
+}
+
 func runBridge(cmd *cobra.Command, args []string) error {
+	// Check VERBOSE environment variable
+	verbose = os.Getenv("VERBOSE") != ""
+
 	// 1. Get flags
 	ttl, err := cmd.Flags().GetDuration("ttl")
+	if err != nil {
+		return err
+	}
+
+	batchInterval, err := cmd.Flags().GetDuration("batch-interval")
 	if err != nil {
 		return err
 	}
@@ -105,15 +137,16 @@ func runBridge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("REGISTRY environment variable not set")
 	}
 
-	log.Println("Starting bidirectional MQTT↔REST bridge...")
-	log.Printf("MQTT broker: %s", os.Getenv("MQTT"))
-	log.Printf("REST registry: %s", os.Getenv("REGISTRY"))
-	log.Printf("Default TTL: %s", ttl)
+	logInfo("Starting bidirectional MQTT↔REST bridge...")
+	logInfo("MQTT broker: %s", os.Getenv("MQTT"))
+	logInfo("REST registry: %s", os.Getenv("REGISTRY"))
+	logInfo("Default TTL: %s", ttl)
+	logInfo("Batch interval: %s", batchInterval)
 	if len(includePatterns) > 0 {
-		log.Printf("Include patterns: %v", includePatterns)
+		logInfo("Include patterns: %v", includePatterns)
 	}
 	if len(excludePatterns) > 0 {
-		log.Printf("Exclude patterns: %v", excludePatterns)
+		logInfo("Exclude patterns: %v", excludePatterns)
 	}
 
 	// 3. Connect to MQTT
@@ -121,14 +154,14 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to MQTT: %w", err)
 	}
-	log.Println("Connected to MQTT broker")
+	logInfo("Connected to MQTT broker")
 
 	// 4. Connect to REST
 	restClient, err := clientfactory.NewClientFromEnv()
 	if err != nil {
 		return fmt.Errorf("failed to connect to REST registry: %w", err)
 	}
-	log.Println("Connected to REST registry")
+	logInfo("Connected to REST registry")
 
 	// 5. Setup context and signal handling
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,52 +171,98 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Shutting down bridge...")
+		logInfo("Shutting down bridge...")
 		cancel()
 	}()
 
 	// 6. Watch MQTT registers
 	mqttMetadata, mqttValues := reg.Watch(mqttRegs)
-	log.Println("Watching MQTT registers...")
+	logInfo("Watching MQTT registers...")
 
 	// 7. Watch REST registers
 	restUpdates, err := restClient.ConsumeAll(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to consume REST registers: %w", err)
 	}
-	log.Println("Watching REST registers...")
+	logInfo("Watching REST registers...")
 
 	// 8. Track active syncs
 	registerSyncs := make(map[string]*registerSync)
 	var syncMu sync.Mutex
 
-	// 9. Main loop
+	// 9. Setup batch updates for MQTT to REST
+	batch := &batchUpdate{
+		pending: make(map[string]pendingUpdate),
+	}
+
+	// Start batch flusher
+	go func() {
+		ticker := time.NewTicker(batchInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				flushBatch(batch)
+			}
+		}
+	}()
+
+	// 10. Main loop
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Bridge stopped")
+			logInfo("Bridge stopped")
 			return nil
 
 		case md, ok := <-mqttMetadata:
 			if !ok {
-				log.Println("MQTT metadata channel closed")
+				logInfo("MQTT metadata channel closed")
 				return nil
 			}
 			handleMQTTMetadata(ctx, md, restClient, mqttRegs, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
 
 		case val, ok := <-mqttValues:
 			if !ok {
-				log.Println("MQTT values channel closed")
+				logInfo("MQTT values channel closed")
 				return nil
 			}
-			handleMQTTValue(val, registerSyncs, &syncMu)
+			handleMQTTValueBatched(val, registerSyncs, &syncMu, batch)
 
 		case restUpdate, ok := <-restUpdates:
 			if !ok {
-				log.Println("REST updates channel closed")
+				logInfo("REST updates channel closed")
 				return nil
 			}
 			handleRESTUpdate(ctx, restUpdate, mqttRegs, restClient, ttl, includePatterns, excludePatterns, registerSyncs, &syncMu)
+		}
+	}
+}
+
+// flushBatch sends all pending MQTT to REST updates
+func flushBatch(batch *batchUpdate) {
+	batch.mu.Lock()
+	pending := batch.pending
+	batch.pending = make(map[string]pendingUpdate)
+	batch.mu.Unlock()
+
+	if len(pending) == 0 {
+		return
+	}
+
+	logVerbose("Flushing batch with %d updates", len(pending))
+
+	for name, update := range pending {
+		restValue := mqttValueToREST(update.value)
+
+		select {
+		case update.sync.restUpdates <- restValue:
+			recordPropagation(update.sync, update.value, true)
+			logVerbose("Batched sync %s to REST: %v", name, restValue)
+		default:
+			log.Printf("Warning: failed to sync %s, channel busy", name)
 		}
 	}
 }
@@ -298,7 +377,7 @@ func handleMQTTMetadata(
 		// Phase 4: Handle metadata update
 		restMetadata := mqttMetadataToREST(md.Metadata)
 		if !metadataEqual(existingSync.restMetadata, restMetadata) {
-			log.Printf("Metadata changed for MQTT register: %s", md.Name)
+			logVerbose("Metadata changed for MQTT register: %s", md.Name)
 			// Cancel existing sync and recreate
 			existingSync.cancel()
 			syncMu.Lock()
@@ -310,7 +389,7 @@ func handleMQTTMetadata(
 		}
 	}
 
-	log.Printf("Discovered MQTT register: %s", md.Name)
+	logVerbose("Discovered MQTT register: %s", md.Name)
 
 	regCtx, regCancel := context.WithCancel(ctx)
 	restMetadata := mqttMetadataToREST(md.Metadata)
@@ -365,13 +444,14 @@ func handleMQTTMetadata(
 	// Handle REST change requests → send to MQTT
 	go handleRESTChangeRequests(sync, restChangeRequests)
 
-	log.Printf("Started bidirectional sync for %s", md.Name)
+	logVerbose("Started bidirectional sync for %s", md.Name)
 }
 
-func handleMQTTValue(
+func handleMQTTValueBatched(
 	val reg.NameAndValue,
 	registerSyncs map[string]*registerSync,
 	syncMu *sync.Mutex,
+	batch *batchUpdate,
 ) {
 	syncMu.Lock()
 	sync, exists := registerSyncs[val.Name]
@@ -386,15 +466,15 @@ func handleMQTTValue(
 		return
 	}
 
-	restValue := mqttValueToREST(val.Value)
-
-	select {
-	case sync.restUpdates <- restValue:
-		recordPropagation(sync, val.Value, true)
-		log.Printf("Synced %s to REST: %v", val.Name, restValue)
-	default:
-		log.Printf("Warning: failed to sync %s, channel busy", val.Name)
+	// Add to batch instead of sending immediately
+	batch.mu.Lock()
+	batch.pending[val.Name] = pendingUpdate{
+		sync:  sync,
+		value: val.Value,
 	}
+	batch.mu.Unlock()
+
+	logVerbose("Queued %s for batch update", val.Name)
 }
 
 func handleRESTUpdate(
@@ -419,7 +499,7 @@ func handleRESTUpdate(
 	if exists {
 		// Phase 4: Check for metadata update
 		if !metadataEqual(existingSync.restMetadata, update.Metadata) {
-			log.Printf("Metadata changed for REST register: %s", update.Name)
+			logVerbose("Metadata changed for REST register: %s", update.Name)
 			// Cancel existing sync and recreate
 			existingSync.cancel()
 			syncMu.Lock()
@@ -434,7 +514,7 @@ func handleRESTUpdate(
 	}
 
 	// New REST register - create MQTT provider
-	log.Printf("Discovered REST register: %s", update.Name)
+	logVerbose("Discovered REST register: %s", update.Name)
 
 	regCtx, regCancel := context.WithCancel(ctx)
 	mqttMetadata := restMetadataToMQTT(update.Metadata)
@@ -492,7 +572,7 @@ func handleRESTUpdate(
 	if shouldPropagate(newSync, restValueBytes, false) {
 		mqttWriter <- restValueBytes
 		recordPropagation(newSync, restValueBytes, false)
-		log.Printf("Synced %s to MQTT: %v", update.Name, update.Value)
+		logVerbose("Synced %s to MQTT: %v", update.Name, update.Value)
 	}
 
 	// Handle REST value updates → MQTT
@@ -501,7 +581,7 @@ func handleRESTUpdate(
 	// Handle MQTT set requests → REST change requests
 	go handleMQTTSetRequests(newSync, mqttReader, restRequests)
 
-	log.Printf("Started bidirectional sync for %s (from REST)", update.Name)
+	logVerbose("Started bidirectional sync for %s (from REST)", update.Name)
 }
 
 func handleRESTValueUpdate(sync *registerSync, update client.RegisterUpdate) {
@@ -514,7 +594,7 @@ func handleRESTValueUpdate(sync *registerSync, update client.RegisterUpdate) {
 	select {
 	case sync.mqttProvider <- restValueBytes:
 		recordPropagation(sync, restValueBytes, false)
-		log.Printf("Synced %s to MQTT: %v", update.Name, update.Value)
+		logVerbose("Synced %s to MQTT: %v", update.Name, update.Value)
 	default:
 		log.Printf("Warning: failed to sync %s to MQTT, channel busy", update.Name)
 	}
@@ -523,11 +603,11 @@ func handleRESTValueUpdate(sync *registerSync, update client.RegisterUpdate) {
 func handleRESTChangeRequests(sync *registerSync, changeRequests <-chan any) {
 	for req := range changeRequests {
 		reqBytes := restValueToMQTT(req)
-		log.Printf("REST change request for %s: %v", sync.name, req)
+		logVerbose("REST change request for %s: %v", sync.name, req)
 
 		select {
 		case sync.mqttProvider <- reqBytes:
-			log.Printf("Forwarded change request to MQTT for %s", sync.name)
+			logVerbose("Forwarded change request to MQTT for %s", sync.name)
 		default:
 			log.Printf("Warning: failed to forward change request for %s", sync.name)
 		}
@@ -545,7 +625,7 @@ func handleRESTToMQTTSync(sync *registerSync, restValues <-chan client.ValueAndM
 		select {
 		case sync.mqttProvider <- restValueBytes:
 			recordPropagation(sync, restValueBytes, false)
-			log.Printf("Synced %s to MQTT: %v", sync.name, update.Value)
+			logVerbose("Synced %s to MQTT: %v", sync.name, update.Value)
 		default:
 			log.Printf("Warning: failed to sync %s to MQTT, channel busy", sync.name)
 		}
@@ -555,11 +635,11 @@ func handleRESTToMQTTSync(sync *registerSync, restValues <-chan client.ValueAndM
 func handleMQTTSetRequests(sync *registerSync, mqttReader <-chan []byte, restRequests chan<- any) {
 	for setReq := range mqttReader {
 		restValue := mqttValueToREST(setReq)
-		log.Printf("MQTT set request for %s: %v", sync.name, restValue)
+		logVerbose("MQTT set request for %s: %v", sync.name, restValue)
 
 		select {
 		case restRequests <- restValue:
-			log.Printf("Forwarded set request to REST for %s", sync.name)
+			logVerbose("Forwarded set request to REST for %s", sync.name)
 		default:
 			log.Printf("Warning: failed to forward set request for %s", sync.name)
 		}
