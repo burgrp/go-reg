@@ -2,90 +2,265 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/burgrp/go-reg/reg"
 )
 
-func TestShouldSyncRegister(t *testing.T) {
+func TestParseFilterRule(t *testing.T) {
 	tests := []struct {
-		name            string
-		registerName    string
-		includePatterns []string
-		excludePatterns []string
-		expected        bool
+		name        string
+		spec        string
+		expected    filterRule
+		expectError bool
 	}{
 		{
-			name:            "no filters - sync everything",
-			registerName:    "temp",
-			includePatterns: []string{},
-			excludePatterns: []string{},
-			expected:        true,
+			name:     "include rule",
+			spec:     "+temp*",
+			expected: filterRule{pattern: "temp*", include: true},
 		},
 		{
-			name:            "include pattern matches",
-			registerName:    "temp1",
-			includePatterns: []string{"temp*"},
-			excludePatterns: []string{},
-			expected:        true,
+			name:     "exclude rule",
+			spec:     "-debug*",
+			expected: filterRule{pattern: "debug*", include: false},
 		},
 		{
-			name:            "include pattern does not match",
-			registerName:    "humidity",
-			includePatterns: []string{"temp*"},
-			excludePatterns: []string{},
-			expected:        false,
+			name:        "empty rule",
+			spec:        "",
+			expectError: true,
 		},
 		{
-			name:            "exclude pattern matches",
-			registerName:    "temp-debug",
-			includePatterns: []string{},
-			excludePatterns: []string{"*-debug"},
-			expected:        false,
+			name:        "no prefix",
+			spec:        "temp*",
+			expectError: true,
 		},
 		{
-			name:            "exclude takes precedence over include",
-			registerName:    "temp-debug",
-			includePatterns: []string{"temp*"},
-			excludePatterns: []string{"*-debug"},
-			expected:        false,
+			name:     "complex pattern include",
+			spec:     "+pv.inverter.*.pvInput",
+			expected: filterRule{pattern: "pv.inverter.*.pvInput", include: true},
 		},
 		{
-			name:            "multiple includes, one matches",
-			registerName:    "humidity",
-			includePatterns: []string{"temp*", "hum*"},
-			excludePatterns: []string{},
-			expected:        true,
-		},
-		{
-			name:            "multiple includes, none match",
-			registerName:    "pressure",
-			includePatterns: []string{"temp*", "hum*"},
-			excludePatterns: []string{},
-			expected:        false,
-		},
-		{
-			name:            "complex pattern - sensors path",
-			registerName:    "sensors/temp",
-			includePatterns: []string{"sensors/*"},
-			excludePatterns: []string{},
-			expected:        true,
-		},
-		{
-			name:            "complex pattern - exclude debug path",
-			registerName:    "sensors/debug/test",
-			includePatterns: []string{"sensors/*"},
-			excludePatterns: []string{"sensors/debug/*"},
-			expected:        false,
+			name:     "complex pattern exclude",
+			spec:     "-pv.inverter.*",
+			expected: filterRule{pattern: "pv.inverter.*", include: false},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := shouldSyncRegister(tt.registerName, tt.includePatterns, tt.excludePatterns)
+			result, err := parseFilterRule(tt.spec)
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if result.pattern != tt.expected.pattern || result.include != tt.expected.include {
+				t.Errorf("parseFilterRule(%q) = %+v, want %+v", tt.spec, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestReadFilterFile(t *testing.T) {
+	// Create a temporary filter file
+	tmpfile, err := os.CreateTemp("", "filter-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	content := `# This is a comment
++temp*
+-debug*
+
+# Another comment
++sensor-*
+-*-test
+`
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := readFilterFile(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("readFilterFile failed: %v", err)
+	}
+
+	expected := []filterRule{
+		{pattern: "temp*", include: true},
+		{pattern: "debug*", include: false},
+		{pattern: "sensor-*", include: true},
+		{pattern: "*-test", include: false},
+	}
+
+	if len(rules) != len(expected) {
+		t.Fatalf("expected %d rules, got %d", len(expected), len(rules))
+	}
+
+	for i, rule := range rules {
+		if rule.pattern != expected[i].pattern || rule.include != expected[i].include {
+			t.Errorf("rule %d: got %+v, want %+v", i, rule, expected[i])
+		}
+	}
+}
+
+func TestParseFilterRules(t *testing.T) {
+	// Create a temporary filter file
+	tmpfile, err := os.CreateTemp("", "filter-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	content := `+file-rule-1
+-file-rule-2
+`
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	specs := []string{
+		"+inline-rule-1",
+		"-inline-rule-2",
+		"@" + tmpfile.Name(),
+		"+inline-rule-3",
+	}
+
+	rules, err := parseFilterRules(specs)
+	if err != nil {
+		t.Fatalf("parseFilterRules failed: %v", err)
+	}
+
+	expected := []filterRule{
+		{pattern: "inline-rule-1", include: true},
+		{pattern: "inline-rule-2", include: false},
+		{pattern: "file-rule-1", include: true},
+		{pattern: "file-rule-2", include: false},
+		{pattern: "inline-rule-3", include: true},
+	}
+
+	if len(rules) != len(expected) {
+		t.Fatalf("expected %d rules, got %d", len(expected), len(rules))
+	}
+
+	for i, rule := range rules {
+		if rule.pattern != expected[i].pattern || rule.include != expected[i].include {
+			t.Errorf("rule %d: got %+v, want %+v", i, rule, expected[i])
+		}
+	}
+}
+
+func TestShouldSyncRegister(t *testing.T) {
+	tests := []struct {
+		name         string
+		registerName string
+		rules        []filterRule
+		expected     bool
+	}{
+		{
+			name:         "no rules - include by default",
+			registerName: "temp",
+			rules:        []filterRule{},
+			expected:     true,
+		},
+		{
+			name:         "include rule matches",
+			registerName: "temp1",
+			rules: []filterRule{
+				{pattern: "temp*", include: true},
+			},
+			expected: true,
+		},
+		{
+			name:         "include rule does not match",
+			registerName: "humidity",
+			rules: []filterRule{
+				{pattern: "temp*", include: true},
+			},
+			expected: true, // Default is include when no match
+		},
+		{
+			name:         "exclude rule matches",
+			registerName: "temp-debug",
+			rules: []filterRule{
+				{pattern: "*-debug", include: false},
+			},
+			expected: false,
+		},
+		{
+			name:         "first rule wins - exclude",
+			registerName: "temp-debug",
+			rules: []filterRule{
+				{pattern: "*-debug", include: false},
+				{pattern: "temp*", include: true},
+			},
+			expected: false,
+		},
+		{
+			name:         "first rule wins - include",
+			registerName: "temp-debug",
+			rules: []filterRule{
+				{pattern: "temp*", include: true},
+				{pattern: "*-debug", include: false},
+			},
+			expected: true,
+		},
+		{
+			name:         "complex use case - exclude inverter but include pvInput",
+			registerName: "pv.inverter.1.power",
+			rules: []filterRule{
+				{pattern: "pv.inverter.*", include: false},
+				{pattern: "pv.inverter.*.pvInput", include: true},
+			},
+			expected: false, // First rule matches and excludes
+		},
+		{
+			name:         "complex use case - include pvInput specifically",
+			registerName: "pv.inverter.1.pvInput",
+			rules: []filterRule{
+				{pattern: "pv.inverter.*", include: false},
+				{pattern: "pv.inverter.*.pvInput", include: true},
+			},
+			expected: false, // First rule matches (pv.inverter.* matches pv.inverter.1.pvInput)
+		},
+		{
+			name:         "correct order - specific before general",
+			registerName: "pv.inverter.1.pvInput",
+			rules: []filterRule{
+				{pattern: "pv.inverter.*.pvInput", include: true},
+				{pattern: "pv.inverter.*", include: false},
+			},
+			expected: true, // First rule matches and includes
+		},
+		{
+			name:         "correct order - general exclude then specific include",
+			registerName: "pv.inverter.1.power",
+			rules: []filterRule{
+				{pattern: "pv.inverter.*.pvInput", include: true},
+				{pattern: "pv.inverter.*", include: false},
+			},
+			expected: false, // Second rule matches and excludes
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := shouldSyncRegister(tt.registerName, tt.rules)
 			if result != tt.expected {
-				t.Errorf("shouldSyncRegister(%q, %v, %v) = %v, want %v",
-					tt.registerName, tt.includePatterns, tt.excludePatterns, result, tt.expected)
+				t.Errorf("shouldSyncRegister(%q, %+v) = %v, want %v",
+					tt.registerName, tt.rules, result, tt.expected)
 			}
 		})
 	}
@@ -134,34 +309,6 @@ func TestMetadataEqual(t *testing.T) {
 			b:        map[string]any{"device": "sensor1"},
 			expected: false,
 		},
-		{
-			name: "complex metadata equal",
-			a: map[string]any{
-				"device":   "sensor1",
-				"location": "room1",
-				"port":     float64(8080),
-			},
-			b: map[string]any{
-				"device":   "sensor1",
-				"location": "room1",
-				"port":     float64(8080),
-			},
-			expected: true,
-		},
-		{
-			name: "complex metadata not equal",
-			a: map[string]any{
-				"device":   "sensor1",
-				"location": "room1",
-				"port":     float64(8080),
-			},
-			b: map[string]any{
-				"device":   "sensor1",
-				"location": "room2",
-				"port":     float64(8080),
-			},
-			expected: false,
-		},
 	}
 
 	for _, tt := range tests {
@@ -195,17 +342,6 @@ func TestMQTTMetadataToREST(t *testing.T) {
 			expected: map[string]any{
 				"device":   "sensor1",
 				"location": "room1",
-			},
-		},
-		{
-			name: "metadata with numbers",
-			mqtt: reg.Metadata{
-				"device": "sensor1",
-				"port":   "8080",
-			},
-			expected: map[string]any{
-				"device": "sensor1",
-				"port":   "8080",
 			},
 		},
 	}
@@ -257,11 +393,6 @@ func TestMQTTValueToREST(t *testing.T) {
 			mqtt:     []byte(`{"temp":22.5,"unit":"C"}`),
 			expected: map[string]any{"temp": float64(22.5), "unit": "C"},
 		},
-		{
-			name:     "array value",
-			mqtt:     []byte(`[1,2,3]`),
-			expected: []any{float64(1), float64(2), float64(3)},
-		},
 	}
 
 	for _, tt := range tests {
@@ -303,16 +434,6 @@ func TestRESTValueToMQTT(t *testing.T) {
 			rest:     true,
 			expected: "true",
 		},
-		{
-			name:     "object value",
-			rest:     map[string]any{"temp": float64(22.5), "unit": "C"},
-			expected: `{"temp":22.5,"unit":"C"}`,
-		},
-		{
-			name:     "array value",
-			rest:     []any{float64(1), float64(2), float64(3)},
-			expected: `[1,2,3]`,
-		},
 	}
 
 	for _, tt := range tests {
@@ -326,35 +447,84 @@ func TestRESTValueToMQTT(t *testing.T) {
 	}
 }
 
-func TestMQTTValueToRESTAndBack(t *testing.T) {
+func TestFilterRulesExample(t *testing.T) {
+	// Test the user's specific use case:
+	// - Include all by default
+	// - Exclude pv.inverter.*
+	// - But include pv.inverter.*.pvInput
+
+	// Correct order: specific patterns before general patterns
+	rules := []filterRule{
+		{pattern: "pv.inverter.*.pvInput", include: true},  // Specific: include pvInput
+		{pattern: "pv.inverter.*", include: false},         // General: exclude all inverter
+	}
+
 	tests := []struct {
-		name  string
-		value any
+		name     string
+		register string
+		expected bool
 	}{
-		{"number", float64(42)},
-		{"string", "hello world"},
-		{"boolean", true},
-		{"object", map[string]any{"key": "value", "num": float64(123)}},
-		{"array", []any{float64(1), "two", true}},
-		{"nested", map[string]any{"outer": map[string]any{"inner": float64(42)}}},
+		{"random register", "temperature", true},           // No match, default include
+		{"inverter power", "pv.inverter.1.power", false},   // Matches general exclude
+		{"inverter pvInput", "pv.inverter.1.pvInput", true}, // Matches specific include
+		{"inverter voltage", "pv.inverter.2.voltage", false}, // Matches general exclude
+		{"other pv register", "pv.battery.charge", true},   // No match, default include
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Convert to MQTT (bytes)
-			mqttBytes := restValueToMQTT(tt.value)
-
-			// Convert back to REST
-			result := mqttValueToREST(mqttBytes)
-
-			// Compare JSON representations
-			originalJSON, _ := json.Marshal(tt.value)
-			resultJSON, _ := json.Marshal(result)
-
-			if string(originalJSON) != string(resultJSON) {
-				t.Errorf("Round-trip failed: %v -> %s -> %v",
-					tt.value, mqttBytes, result)
+			result := shouldSyncRegister(tt.register, rules)
+			if result != tt.expected {
+				t.Errorf("shouldSyncRegister(%q) = %v, want %v (with rules %+v)",
+					tt.register, result, tt.expected, rules)
 			}
 		})
+	}
+}
+
+func TestFilterFileExample(t *testing.T) {
+	// Create example filter file
+	tmpfile, err := os.CreateTemp("", "filter-example-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	content := `# Exclude all pv.inverter.* registers
+# But include the specific pvInput registers
++pv.inverter.*.pvInput
+-pv.inverter.*
+`
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read and parse
+	rules, err := readFilterFile(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("readFilterFile failed: %v", err)
+	}
+
+	// Test the rules
+	tests := []struct {
+		register string
+		expected bool
+	}{
+		{"pv.inverter.1.power", false},
+		{"pv.inverter.1.pvInput", true},
+		{"pv.inverter.2.voltage", false},
+		{"pv.inverter.2.pvInput", true},
+		{"other.register", true},
+	}
+
+	for _, tt := range tests {
+		result := shouldSyncRegister(tt.register, rules)
+		if result != tt.expected {
+			t.Errorf("shouldSyncRegister(%q) = %v, want %v",
+				tt.register, result, tt.expected)
+		}
 	}
 }

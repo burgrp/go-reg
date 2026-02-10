@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,46 +33,66 @@ REST providers. Values are batched for optimal performance.
 The REGISTRY environment variable must be set to the REST registry URL.
 
 Filtering:
-  Use --include and --exclude flags to control which registers are synced.
+  Use --filter flag to control which registers are synced with ordered rules.
+  Rules are evaluated in order, first match wins. Default is include if no match.
+
+  Rule format:
+    +pattern  - Include registers matching pattern
+    -pattern  - Exclude registers matching pattern
+    @file     - Read rules from file (one per line, # for comments)
+
   Patterns use standard glob syntax (* matches any sequence, ? matches one char).
-  Exclude patterns take precedence over include patterns.
-  If no filters specified, all registers are synced.
 
 Examples:
-  # Sync all registers
+  # Sync all registers (no filters)
   export MQTT=localhost:1883
   export REGISTRY=http://localhost:8080
   mreg bridge --ttl 30s
 
-  # Sync only temperature sensors
-  mreg bridge --include "temp*" --include "*-temperature"
+  # Exclude pv.inverter.* but include pv.inverter.*.pvInput
+  # IMPORTANT: Specific patterns BEFORE general patterns!
+  mreg bridge \
+    --filter "+pv.inverter.*.pvInput" \
+    --filter "-pv.inverter.*"
 
-  # Sync all sensors except debug sensors
-  mreg bridge --include "sensors/*" --exclude "sensors/debug/*"
+  # Include only sensors, exclude debug
+  mreg bridge \
+    --filter "+sensor-*" \
+    --filter "-*-debug"
 
-  # Multiple patterns with custom batch interval
-  mreg bridge --include "sensor-*" --exclude "*-test" --batch-interval 500ms`,
+  # Read filter rules from file
+  mreg bridge --filter "@filter-rules.txt"
+
+  # filter-rules.txt example:
+  # # Specific patterns first!
+  # +pv.inverter.*.pvInput
+  # -pv.inverter.*
+  # -*.debug`,
 	RunE: runBridge,
 }
 
 func init() {
 	RootCmd.AddCommand(bridgeCmd)
 	bridgeCmd.Flags().Duration("ttl", 10*time.Second, "TTL for registers in REST registry")
-	bridgeCmd.Flags().StringSlice("include", []string{}, "Glob patterns for registers to include")
-	bridgeCmd.Flags().StringSlice("exclude", []string{}, "Glob patterns for registers to exclude")
+	bridgeCmd.Flags().StringSlice("filter", []string{}, "Filter rules (+pattern to include, -pattern to exclude, @file to read from file)")
 	bridgeCmd.Flags().Duration("batch-interval", 200*time.Millisecond, "Interval for batching value updates")
 	bridgeCmd.Flags().Duration("poll-interval", 30*time.Second, "Interval for polling REST change requests")
 }
 
+// filterRule represents a single include/exclude rule
+type filterRule struct {
+	pattern string
+	include bool // true = include, false = exclude
+}
+
 // Bridge manages the one-way MQTT to REST synchronization
 type Bridge struct {
-	mqttRegs        *reg.Registers
-	restProvider    *rest.ProviderClient
-	ttl             time.Duration
-	batchInterval   time.Duration
-	pollInterval    time.Duration
-	includePatterns []string
-	excludePatterns []string
+	mqttRegs      *reg.Registers
+	restProvider  *rest.ProviderClient
+	ttl           time.Duration
+	batchInterval time.Duration
+	pollInterval  time.Duration
+	filterRules   []filterRule
 
 	// State
 	registerSyncs map[string]*registerSync
@@ -108,8 +130,13 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	ttl, _ := cmd.Flags().GetDuration("ttl")
 	batchInterval, _ := cmd.Flags().GetDuration("batch-interval")
 	pollInterval, _ := cmd.Flags().GetDuration("poll-interval")
-	includePatterns, _ := cmd.Flags().GetStringSlice("include")
-	excludePatterns, _ := cmd.Flags().GetStringSlice("exclude")
+	filterSpecs, _ := cmd.Flags().GetStringSlice("filter")
+
+	// Parse filter rules
+	filterRules, err := parseFilterRules(filterSpecs)
+	if err != nil {
+		return fmt.Errorf("invalid filter rules: %w", err)
+	}
 
 	// Check REGISTRY env var
 	registryURL := os.Getenv("REGISTRY")
@@ -121,11 +148,15 @@ func runBridge(cmd *cobra.Command, args []string) error {
 	log.Printf("MQTT broker: %s", os.Getenv("MQTT"))
 	log.Printf("REST registry: %s", registryURL)
 	log.Printf("TTL: %s, Batch interval: %s, Poll interval: %s", ttl, batchInterval, pollInterval)
-	if len(includePatterns) > 0 {
-		log.Printf("Include patterns: %v", includePatterns)
-	}
-	if len(excludePatterns) > 0 {
-		log.Printf("Exclude patterns: %v", excludePatterns)
+	if len(filterRules) > 0 {
+		log.Printf("Filter rules: %d rules loaded", len(filterRules))
+		for i, rule := range filterRules {
+			action := "include"
+			if !rule.include {
+				action = "exclude"
+			}
+			log.Printf("  %d. %s: %s", i+1, action, rule.pattern)
+		}
 	}
 
 	// Connect to MQTT
@@ -141,14 +172,13 @@ func runBridge(cmd *cobra.Command, args []string) error {
 
 	// Create bridge
 	bridge := &Bridge{
-		mqttRegs:        mqttRegs,
-		restProvider:    restProvider,
-		ttl:             ttl,
-		batchInterval:   batchInterval,
-		pollInterval:    pollInterval,
-		includePatterns: includePatterns,
-		excludePatterns: excludePatterns,
-		registerSyncs:   make(map[string]*registerSync),
+		mqttRegs:      mqttRegs,
+		restProvider:  restProvider,
+		ttl:           ttl,
+		batchInterval: batchInterval,
+		pollInterval:  pollInterval,
+		filterRules:   filterRules,
+		registerSyncs: make(map[string]*registerSync),
 	}
 
 	// Initialize batch manager
@@ -212,7 +242,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 // handleMetadata processes MQTT register metadata (discovery)
 func (b *Bridge) handleMetadata(ctx context.Context, md reg.NameAndMetadata) {
 	// Apply filters
-	if !shouldSyncRegister(md.Name, b.includePatterns, b.excludePatterns) {
+	if !shouldSyncRegister(md.Name, b.filterRules) {
 		return
 	}
 
@@ -384,30 +414,98 @@ func (b *Bridge) pollChangeRequests(ctx context.Context, name string, mqttWriter
 	}
 }
 
-// shouldSyncRegister checks if a register should be synced based on include/exclude patterns
-func shouldSyncRegister(name string, includePatterns, excludePatterns []string) bool {
-	// No filters = sync everything
-	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
+// parseFilterRules parses filter specifications into rules
+func parseFilterRules(specs []string) ([]filterRule, error) {
+	var rules []filterRule
+
+	for _, spec := range specs {
+		if strings.HasPrefix(spec, "@") {
+			// Read from file
+			fileRules, err := readFilterFile(spec[1:])
+			if err != nil {
+				return nil, fmt.Errorf("reading filter file %s: %w", spec[1:], err)
+			}
+			rules = append(rules, fileRules...)
+		} else {
+			// Parse single rule
+			rule, err := parseFilterRule(spec)
+			if err != nil {
+				return nil, err
+			}
+			rules = append(rules, rule)
+		}
+	}
+
+	return rules, nil
+}
+
+// parseFilterRule parses a single filter rule
+func parseFilterRule(spec string) (filterRule, error) {
+	if len(spec) == 0 {
+		return filterRule{}, fmt.Errorf("empty filter rule")
+	}
+
+	switch spec[0] {
+	case '+':
+		return filterRule{pattern: spec[1:], include: true}, nil
+	case '-':
+		return filterRule{pattern: spec[1:], include: false}, nil
+	default:
+		return filterRule{}, fmt.Errorf("filter rule must start with + or -: %s", spec)
+	}
+}
+
+// readFilterFile reads filter rules from a file
+func readFilterFile(path string) ([]filterRule, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var rules []filterRule
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		rule, err := parseFilterRule(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNum, err)
+		}
+		rules = append(rules, rule)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return rules, nil
+}
+
+// shouldSyncRegister checks if a register should be synced based on filter rules
+func shouldSyncRegister(name string, rules []filterRule) bool {
+	// If no rules, include by default
+	if len(rules) == 0 {
 		return true
 	}
 
-	// Check excludes first (higher priority)
-	for _, pattern := range excludePatterns {
-		if matched, _ := filepath.Match(pattern, name); matched {
-			return false
+	// Evaluate rules in order, first match wins
+	for _, rule := range rules {
+		matched, _ := filepath.Match(rule.pattern, name)
+		if matched {
+			return rule.include
 		}
 	}
 
-	// If includes specified, must match at least one
-	if len(includePatterns) > 0 {
-		for _, pattern := range includePatterns {
-			if matched, _ := filepath.Match(pattern, name); matched {
-				return true
-			}
-		}
-		return false
-	}
-
+	// No match, include by default
 	return true
 }
 
